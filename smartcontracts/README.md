@@ -8,7 +8,7 @@ gates eligibility on an ENS identity**, plus the lending contract that consumes 
 
 | # | Contract | Status | Purpose |
 |---|----------|--------|---------|
-| 1 | `CreditCertificateRegistry` | **Done** | Centralizes the credit signals, defines the per-user score, and enforces the ENS gate onchain. Single entry point for credit data. |
+| 1 | `CreditCertificateRegistry` | **Done** | Centralizes the credit signals, defines the per-user score, enforces the ENS gate, and mints the certificate as a soulbound NFT — all onchain. Single entry point for credit data. |
 | 2 | `LendingVault` | **Done** | Holds LP liquidity and issues undercollateralized loans gated by `registry.isEligible` (credit + ENS); built-in default-protection reserve. |
 
 ## Phase 1 score sources
@@ -102,6 +102,27 @@ default the reserve refills `liquidity` so LPs are made whole up to the availabl
 The vault has no ENS logic of its own — the credit + ENS gate is enforced entirely by
 `registry.isEligible`, re-checked at payout time.
 
+## Soulbound certificate NFT (contract #1)
+
+The registry **is** an ERC-721. Issuing a certificate mints one **soulbound**
+(non-transferable, ERC-5192) token to the business wallet — so the credit certificate
+literally lives in the user's wallet and shows up in explorers/portfolios, while staying
+bound to the wallet that earned it.
+
+- **Non-transferable:** `transferFrom` / `safeTransferFrom` / `approve` all revert
+  (`Soulbound`); `locked(tokenId)` returns `true`. A high score can't be sold or moved.
+- **One per wallet:** `tokenIdOf[wallet]`, minted on first `issueCertificate`.
+- **Fully onchain dynamic art:** `tokenURI` returns a base64 JSON + SVG generated in
+  Solidity (no IPFS/backend), reflecting the **live** score, risk tier, ENS name and
+  status (incl. on-the-fly expiry). Revoke/default/expiry change what the badge shows.
+- **Source of truth stays single:** the NFT reads the same stored certificate used by the
+  score and ENS gate — no duplicated state, still just two protocol contracts.
+
+```
+issueCertificate(wallet, inputs)  ->  store cert + _mint soulbound token + Locked event
+tokenURI(id)                      ->  data:application/json;base64,...  (JSON + SVG)
+```
+
 ## End-to-end sequence
 
 ```mermaid
@@ -155,14 +176,18 @@ Two relationships make the design click:
 
 ```
 src/
-  CreditCertificateRegistry.sol         # contract #1 — signals + score + ENS gate
+  CreditCertificateRegistry.sol         # contract #1 — signals + score + ENS gate + SBT
   LendingVault.sol                      # contract #2 — score-gated loans + default reserve
+  SoulboundERC721.sol                   # minimal non-transferable ERC-721 (ERC-5192) base
   interfaces/
     ICreditCertificateRegistry.sol
     IENS.sol                            # minimal ENS registry + resolver interfaces
     IERC20.sol
   libraries/
     CreditTypes.sol                     # enums, ScoreInputs, CreditCertificate, score math
+    CreditMetadata.sol                  # onchain tokenURI (JSON + dynamic SVG)
+    Base64.sol                          # base64 encoder
+    Strings.sol                         # uint -> string
   mocks/
     MockERC20.sol                       # demo loan asset (USDC-like)
     MockENSRegistry.sol                 # demo ENS registry
@@ -172,6 +197,7 @@ script/
 test/
   CreditCertificateRegistry.t.sol       # registry score/lifecycle tests
   CreditCertificateRegistryEns.t.sol    # registry ENS-gate tests
+  CreditCertificateNft.t.sol            # soulbound NFT tests
   LendingVault.t.sol                    # vault tests
   utils/Vm.sol                          # vendored cheatcode interface (no forge-std needed)
 ```
@@ -179,7 +205,8 @@ test/
 ## Build, test, deploy
 
 This package is dependency-free — `forge build` and `forge test` work without
-`forge install`. 24 tests across the three suites.
+`forge install`. 30 tests across the four suites. (Onchain SVG metadata needs
+`via_ir = true`, already set in `foundry.toml`.)
 
 ```bash
 forge build

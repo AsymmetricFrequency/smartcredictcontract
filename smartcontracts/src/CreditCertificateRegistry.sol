@@ -2,8 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {CreditTypes} from "./libraries/CreditTypes.sol";
+import {CreditMetadata} from "./libraries/CreditMetadata.sol";
 import {ICreditCertificateRegistry} from "./interfaces/ICreditCertificateRegistry.sol";
 import {IENSRegistry, IAddrResolver, ITextResolver} from "./interfaces/IENS.sol";
+import {SoulboundERC721} from "./SoulboundERC721.sol";
 
 /// @title CreditCertificateRegistry
 /// @author LendSignal
@@ -29,7 +31,11 @@ import {IENSRegistry, IAddrResolver, ITextResolver} from "./interfaces/IENS.sol"
 ///         name resolves back to the borrower wallet (and, optionally, the
 ///         `lendsignal.attestation` text record matches the certificate's attestation
 ///         hash). Lending contracts just read `isEligible`.
-contract CreditCertificateRegistry is ICreditCertificateRegistry {
+///
+///         Each certificate is also a SOULBOUND NFT: issuing one mints a non-transferable
+///         ERC-721 (ERC-5192) to the business wallet, with fully onchain dynamic art that
+///         reflects the live score, tier, ENS name and status.
+contract CreditCertificateRegistry is ICreditCertificateRegistry, SoulboundERC721 {
     // ---------------------------------------------------------------------
     // Roles
     // ---------------------------------------------------------------------
@@ -74,7 +80,6 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
 
     /// @notice Enumerable list of every borrower ever certified (demo/frontend helper).
     address[] private _borrowers;
-    mapping(address => bool) private _known;
 
     // ---------------------------------------------------------------------
     // Errors
@@ -111,7 +116,7 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     /// @param _issuer Address allowed to write certificates (backend / CRE signer).
-    constructor(address _issuer) {
+    constructor(address _issuer) SoulboundERC721("LendSignal Credit Certificate", "LSCC") {
         if (_issuer == address(0)) revert ZeroAddress();
         owner = msg.sender;
         issuer = _issuer;
@@ -151,10 +156,9 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
             version: 1
         });
 
-        if (!_known[borrower]) {
-            _known[borrower] = true;
-            _borrowers.push(borrower);
-        }
+        // First-time certification: index the borrower and mint the soulbound NFT.
+        _borrowers.push(borrower);
+        _mint(borrower);
 
         emit SignalsRecorded(
             borrower,
@@ -307,6 +311,17 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
 
     function borrowerAt(uint256 index) external view returns (address) {
         return _borrowers[index];
+    }
+
+    // ---------------------------------------------------------------------
+    // Views — soulbound NFT metadata
+    // ---------------------------------------------------------------------
+
+    /// @notice Fully onchain, dynamic metadata for the certificate token. Reflects the
+    ///         live score, tier, ENS name and effective status (incl. on-the-fly expiry).
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        address holder = ownerOf(tokenId); // reverts if the token does not exist
+        return CreditMetadata.tokenURI(_certificates[holder], holder, tokenId, statusOf(holder));
     }
 
     // ---------------------------------------------------------------------

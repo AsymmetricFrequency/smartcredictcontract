@@ -7,6 +7,8 @@ libs = ["lib"]
 solc_version = "0.8.24"
 optimizer = true
 optimizer_runs = 200
+# Onchain SVG/JSON metadata uses many string.concat locals -> compile via IR.
+via_ir = true
 # Self-contained: no external git submodules are required to `forge build`.
 # All interfaces (IERC20, etc.) are vendored under src/interfaces.
 remappings = []
