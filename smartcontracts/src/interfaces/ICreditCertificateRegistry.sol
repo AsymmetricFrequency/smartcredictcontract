@@ -6,10 +6,11 @@ import {CreditTypes} from "../libraries/CreditTypes.sol";
 /// @title ICreditCertificateRegistry
 /// @notice Read/write surface of the LendSignal credit certificate registry.
 /// @dev This is the contract that *centralizes* the offchain credit signals
-///      (Chainlink Confidential AI + offchain CRS bureau) and *defines the per-user
-///      score* onchain. Lending contracts consume it through `isEligible`.
+///      (Chainlink Confidential AI + offchain CRS bureau), *defines the per-user score*
+///      onchain, and *gates eligibility on an ENS identity*. Lending contracts consume it
+///      through `isEligible`.
 interface ICreditCertificateRegistry {
-    // --- Events ---
+    // --- Credit events ---
 
     event CertificateIssued(
         address indexed borrower,
@@ -27,7 +28,7 @@ interface ICreditCertificateRegistry {
 
     event CertificateDefaulted(address indexed borrower);
 
-    /// @notice Emitted on every write so indexers can reconstruct score composition.
+    /// @notice Emitted on every score write so indexers can reconstruct score composition.
     event SignalsRecorded(
         address indexed borrower,
         uint256 confidentialAiScore,
@@ -41,6 +42,12 @@ interface ICreditCertificateRegistry {
     event WeightsUpdated(uint16 aiWeightBps, uint16 bureauWeightBps);
     event MinEligibleScoreUpdated(uint256 previous, uint256 current);
 
+    // --- ENS events ---
+
+    event EnsLinked(address indexed borrower, string ensName, bytes32 ensNode);
+    event EnsRegistryUpdated(address indexed ensRegistry);
+    event EnsGateUpdated(bool enabled, bool requireAttestationRecord);
+
     // --- Writes (issuer-gated) ---
 
     function issueCertificate(address borrower, CreditTypes.ScoreInputs calldata inputs) external;
@@ -50,6 +57,9 @@ interface ICreditCertificateRegistry {
     function revokeCertificate(address borrower) external;
 
     function markDefault(address borrower) external;
+
+    /// @notice Link an ENS name (and its precomputed namehash) to a borrower certificate.
+    function linkEns(address borrower, string calldata ensName, bytes32 ensNode) external;
 
     // --- Views ---
 
@@ -64,7 +74,15 @@ interface ICreditCertificateRegistry {
 
     function riskTierOf(address borrower) external view returns (CreditTypes.RiskTier);
 
+    /// @notice True when the borrower's linked ENS name resolves to their wallet (and,
+    ///         if required, the attestation text record matches the certificate).
+    function isEnsVerified(address borrower) external view returns (bool);
+
+    /// @notice Full lending gate: active + unexpired + score + risk tier + (optional) ENS.
     function isEligible(address borrower) external view returns (bool);
+
+    /// @notice The exact value the `lendsignal.attestation` ENS text record must hold.
+    function attestationRecord(bytes32 hash) external pure returns (string memory);
 
     function borrowersCount() external view returns (uint256);
 }

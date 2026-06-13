@@ -19,9 +19,10 @@ interface Vm {
 /// @dev Usage:
 ///        forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
 ///      Env:
-///        PRIVATE_KEY (required) deployer key
-///        ISSUER      (optional) certificate issuer; defaults to the deployer
-///        ASSET       (optional) ERC20 loan asset; if unset, a MockERC20 is deployed
+///        PRIVATE_KEY  (required) deployer key
+///        ISSUER       (optional) certificate issuer; defaults to the deployer
+///        ASSET        (optional) ERC20 loan asset; if unset, a MockERC20 is deployed
+///        ENS_REGISTRY (optional) ENS registry address; if set, the ENS gate is wired on
 contract Deploy {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -32,10 +33,16 @@ contract Deploy {
         uint256 deployerPk = vm.envUint("PRIVATE_KEY");
         address issuer = vm.envOr("ISSUER", vm.addr(deployerPk));
         asset = vm.envOr("ASSET", address(0));
+        address ensRegistry = vm.envOr("ENS_REGISTRY", address(0));
 
         vm.startBroadcast(deployerPk);
 
         registry = new CreditCertificateRegistry(issuer);
+
+        if (ensRegistry != address(0)) {
+            registry.setEnsRegistry(ensRegistry);
+            registry.setEnsGateEnabled(true);
+        }
 
         if (asset == address(0)) {
             asset = address(new MockERC20("Mock USD Coin", "mUSDC", 6));

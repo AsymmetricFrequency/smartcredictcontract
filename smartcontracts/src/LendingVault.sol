@@ -3,22 +3,24 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {ICreditCertificateRegistry} from "./interfaces/ICreditCertificateRegistry.sol";
-import {IENSVerifier} from "./interfaces/IENSVerifier.sol";
 
 /// @title LendingVault
 /// @author LendSignal
 /// @notice Contract #2: holds LP liquidity and issues undercollateralized working-capital
-///         loans, gated by the credit score in CreditCertificateRegistry (contract #1).
+///         loans, gated by the credit score AND ENS identity in
+///         CreditCertificateRegistry (contract #1).
 ///
 ///         Lifecycle of a loan:
 ///           requestLoan        borrower opens a request (must be `isEligible`)
-///           approveAndPayout   keeper re-checks the gate + optional ENS, transfers funds
+///           approveAndPayout   keeper re-checks the gate, transfers funds
 ///           repay              borrower returns principal + fee (fee -> protection reserve)
 ///           markDefault        keeper flags a default; the reserve reimburses the LP pool
 ///
-///         A built-in protection `reserve` (funded by origination fees and/or
-///         `fundReserve`) absorbs defaults, so the default-fund role lives inside this
-///         single contract instead of a third one.
+///         The credit + ENS gate lives entirely in the registry's `isEligible`, so this
+///         contract has a single integration point and no ENS logic of its own. A built-in
+///         protection `reserve` (funded by origination fees and/or `fundReserve`) absorbs
+///         defaults, so the default-fund role lives inside this single contract instead of
+///         a third one.
 contract LendingVault {
     // ---------------------------------------------------------------------
     // Wiring & roles
@@ -26,8 +28,7 @@ contract LendingVault {
 
     address public owner;
     IERC20 public immutable asset; // loan asset, e.g. USDC
-    ICreditCertificateRegistry public immutable registry; // contract #1
-    IENSVerifier public ensVerifier; // optional; address(0) = ENS gate skipped
+    ICreditCertificateRegistry public immutable registry; // contract #1 (credit + ENS gate)
 
     // ---------------------------------------------------------------------
     // Policy (owner-tunable)
@@ -93,7 +94,6 @@ contract LendingVault {
     error HasOpenLoan();
     error InvalidLoanState();
     error NotBorrower();
-    error EnsGateFailed();
     error InvalidPolicy();
     error TransferFailed();
 
@@ -109,7 +109,6 @@ contract LendingVault {
     event LoanRepaid(uint256 indexed loanId, address indexed borrower, uint256 principal, uint256 fee);
     event LoanDefaulted(uint256 indexed loanId, address indexed borrower, uint256 principal, uint256 reimbursed);
     event LoanCancelled(uint256 indexed loanId, address indexed borrower);
-    event EnsVerifierUpdated(address indexed verifier);
     event PolicyUpdated(uint256 originationFeeBps, uint256 maxLoanPerBorrower, uint32 maxDurationDays);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -198,21 +197,14 @@ contract LendingVault {
         emit LoanCancelled(loanId, loan.borrower);
     }
 
-    /// @notice Re-check the credit gate (and optional ENS gate) and pay out the loan.
-    /// @dev Keeper/owner triggered. Eligibility is re-read at payout time so a revoked or
-    ///      expired certificate between request and payout blocks the transfer.
+    /// @notice Re-check the registry gate (credit score + ENS) and pay out the loan.
+    /// @dev Keeper/owner triggered. Eligibility is re-read at payout time so a revoked,
+    ///      expired or ENS-unverified certificate between request and payout blocks the
+    ///      transfer.
     function approveAndPayout(uint256 loanId) external onlyOwner {
         Loan storage loan = loans[loanId];
         if (loan.status != LoanStatus.Requested) revert InvalidLoanState();
         if (!registry.isEligible(loan.borrower)) revert NotEligible();
-
-        if (address(ensVerifier) != address(0)) {
-            bytes32 attestationHash = registry.getCertificate(loan.borrower).attestationHash;
-            if (!ensVerifier.isVerified(loan.borrower, loan.ensName, attestationHash)) {
-                revert EnsGateFailed();
-            }
-        }
-
         if (loan.principal > liquidity) revert InsufficientLiquidity();
 
         uint256 fee = (loan.principal * originationFeeBps) / BPS;
@@ -282,11 +274,6 @@ contract LendingVault {
     // ---------------------------------------------------------------------
     // Admin
     // ---------------------------------------------------------------------
-
-    function setEnsVerifier(address verifier) external onlyOwner {
-        ensVerifier = IENSVerifier(verifier);
-        emit EnsVerifierUpdated(verifier);
-    }
 
     function setPolicy(uint256 _originationFeeBps, uint256 _maxLoanPerBorrower, uint32 _maxDurationDays)
         external

@@ -3,13 +3,14 @@ pragma solidity ^0.8.24;
 
 import {CreditTypes} from "./libraries/CreditTypes.sol";
 import {ICreditCertificateRegistry} from "./interfaces/ICreditCertificateRegistry.sol";
+import {IENSRegistry, IAddrResolver, ITextResolver} from "./interfaces/IENS.sol";
 
 /// @title CreditCertificateRegistry
 /// @author LendSignal
-/// @notice Onchain hub that CENTRALIZES the offchain credit signals and DEFINES the
-///         per-user credit score.
+/// @notice Onchain hub that CENTRALIZES the offchain credit signals, DEFINES the per-user
+///         credit score, and GATES eligibility on an ENS identity.
 ///
-///         PHASE 1 sources (wallet-behavior signal intentionally out of scope):
+///         PHASE 1 score sources (wallet-behavior signal intentionally out of scope):
 ///           1. Chainlink Confidential AI Attester score  ("CRI" signal)
 ///           2. Offchain CRS credit-risk bureau score
 ///
@@ -18,23 +19,25 @@ import {ICreditCertificateRegistry} from "./interfaces/ICreditCertificateRegistr
 ///           LendSignal backend / Chainlink CRE workflow
 ///             -> Confidential AI Attester score  (Chainlink)
 ///             -> CRS / credit-risk bureau score   (offchain)
-///                 => issuer EOA signs issueCertificate(borrower, ScoreInputs)
-///                     => this contract blends them into `combinedScore`,
-///                        derives the risk tier, and stores an updateable certificate.
+///                 => issuer signs issueCertificate(borrower, ScoreInputs)
+///                 => issuer signs linkEns(borrower, name, namehash)
+///                     => this contract blends scores into `combinedScore`, derives the
+///                        risk tier, stores an updateable certificate, and verifies the
+///                        ENS identity onchain.
 ///
-///         The certificate is then read by the LendingVault (contract #2) and by the
-///         frontend / ENS gate. Raw private evidence never touches this contract — only
-///         normalized scores and content hashes do.
+///         ENS gate (real, not cosmetic): a certificate is only eligible if its linked ENS
+///         name resolves back to the borrower wallet (and, optionally, the
+///         `lendsignal.attestation` text record matches the certificate's attestation
+///         hash). Lending contracts just read `isEligible`.
 contract CreditCertificateRegistry is ICreditCertificateRegistry {
     // ---------------------------------------------------------------------
     // Roles
     // ---------------------------------------------------------------------
 
-    /// @notice Admin: can rotate the issuer and tune the score policy.
+    /// @notice Admin: rotates the issuer, tunes the score policy and the ENS gate.
     address public owner;
 
-    /// @notice The only address allowed to write certificates. This is the LendSignal
-    ///         backend signer or the Chainlink CRE workflow forwarder.
+    /// @notice The only address allowed to write certificates (backend / CRE signer).
     address public issuer;
 
     // ---------------------------------------------------------------------
@@ -46,6 +49,22 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
 
     /// @notice Minimum combined score for a certificate to be considered eligible.
     uint256 public minEligibleScore = 750;
+
+    // ---------------------------------------------------------------------
+    // ENS gate config — tunable by owner
+    // ---------------------------------------------------------------------
+
+    /// @notice ENS registry used for onchain resolution. address(0) = not configured.
+    IENSRegistry public ens;
+
+    /// @notice When true, `isEligible` also requires `isEnsVerified`.
+    bool public ensGateEnabled;
+
+    /// @notice When true, ENS verification also checks the `lendsignal.attestation` record.
+    bool public requireAttestationRecord;
+
+    /// @notice The ENS text-record key carrying the attestation hash.
+    string public constant ATTESTATION_KEY = "lendsignal.attestation";
 
     // ---------------------------------------------------------------------
     // Storage
@@ -68,7 +87,8 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     error InvalidExpiry(); // expiresAt not in the future
     error InvalidWeights(); // weights do not sum to 10_000
     error AlreadyCertified(); // issue called on an existing certificate
-    error NotCertified(); // update/revoke on a missing certificate
+    error NotCertified(); // update/revoke/linkEns on a missing certificate
+    error InvalidEnsNode(); // ensNode is zero
 
     // ---------------------------------------------------------------------
     // Modifiers
@@ -122,6 +142,8 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
             attestationHash: inputs.attestationHash,
             bureauReportHash: inputs.bureauReportHash,
             evidenceDigest: inputs.evidenceDigest,
+            ensName: "",
+            ensNode: bytes32(0),
             status: CreditTypes.Status.Active,
             issuedAt: block.timestamp,
             expiresAt: inputs.expiresAt,
@@ -146,6 +168,7 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     /// @inheritdoc ICreditCertificateRegistry
+    /// @dev Preserves the existing ENS link; only the score/evidence/lifecycle are rewritten.
     function updateCertificate(address borrower, CreditTypes.ScoreInputs calldata inputs)
         external
         onlyIssuer
@@ -181,6 +204,20 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     /// @inheritdoc ICreditCertificateRegistry
+    function linkEns(address borrower, string calldata ensName, bytes32 ensNode)
+        external
+        onlyIssuer
+    {
+        if (ensNode == bytes32(0)) revert InvalidEnsNode();
+        CreditTypes.CreditCertificate storage cert = _certificates[borrower];
+        if (cert.status == CreditTypes.Status.None) revert NotCertified();
+        cert.ensName = ensName;
+        cert.ensNode = ensNode;
+        cert.lastUpdatedAt = block.timestamp;
+        emit EnsLinked(borrower, ensName, ensNode);
+    }
+
+    /// @inheritdoc ICreditCertificateRegistry
     function revokeCertificate(address borrower) external onlyIssuer {
         CreditTypes.CreditCertificate storage cert = _certificates[borrower];
         if (cert.status == CreditTypes.Status.None) revert NotCertified();
@@ -190,8 +227,6 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     /// @inheritdoc ICreditCertificateRegistry
-    /// @dev Called by the issuer (or, later, the LendingVault via the issuer role) when a
-    ///      loan backed by this certificate defaults.
     function markDefault(address borrower) external onlyIssuer {
         CreditTypes.CreditCertificate storage cert = _certificates[borrower];
         if (cert.status == CreditTypes.Status.None) revert NotCertified();
@@ -201,7 +236,7 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     // ---------------------------------------------------------------------
-    // Views
+    // Views — credit
     // ---------------------------------------------------------------------
 
     /// @inheritdoc ICreditCertificateRegistry
@@ -214,8 +249,6 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     /// @inheritdoc ICreditCertificateRegistry
-    /// @dev Returns `Expired` on the fly when a stored-Active certificate is past expiry,
-    ///      without needing a write to flip the flag.
     function statusOf(address borrower) public view returns (CreditTypes.Status) {
         CreditTypes.CreditCertificate storage cert = _certificates[borrower];
         if (cert.status == CreditTypes.Status.Active && block.timestamp >= cert.expiresAt) {
@@ -235,20 +268,43 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     /// @inheritdoc ICreditCertificateRegistry
-    /// @dev The lending gate. Eligible iff active, unexpired, score above the floor and
-    ///      risk tier Medium or Low.
+    /// @dev The lending gate: active, unexpired, score above the floor, risk tier Medium or
+    ///      Low, and (when the ENS gate is enabled) a verified ENS identity.
     function isEligible(address borrower) external view returns (bool) {
         CreditTypes.CreditCertificate storage cert = _certificates[borrower];
-        return cert.status == CreditTypes.Status.Active && block.timestamp < cert.expiresAt
-            && cert.combinedScore >= minEligibleScore && cert.riskTier != CreditTypes.RiskTier.High;
+        if (cert.status != CreditTypes.Status.Active) return false;
+        if (block.timestamp >= cert.expiresAt) return false;
+        if (cert.combinedScore < minEligibleScore) return false;
+        if (cert.riskTier == CreditTypes.RiskTier.High) return false;
+        if (ensGateEnabled && !_ensOk(borrower)) return false;
+        return true;
     }
+
+    // ---------------------------------------------------------------------
+    // Views — ENS
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc ICreditCertificateRegistry
+    function isEnsVerified(address borrower) external view returns (bool) {
+        return _ensOk(borrower);
+    }
+
+    /// @inheritdoc ICreditCertificateRegistry
+    /// @dev The `lendsignal.attestation` text record must equal the 0x-prefixed lowercase
+    ///      hex of the certificate's attestation hash.
+    function attestationRecord(bytes32 hash) public pure returns (string memory) {
+        return _toHexString(hash);
+    }
+
+    // ---------------------------------------------------------------------
+    // Views — enumeration
+    // ---------------------------------------------------------------------
 
     /// @inheritdoc ICreditCertificateRegistry
     function borrowersCount() external view returns (uint256) {
         return _borrowers.length;
     }
 
-    /// @notice Enumerate certified borrowers (demo/frontend helper).
     function borrowerAt(uint256 index) external view returns (address) {
         return _borrowers[index];
     }
@@ -263,7 +319,6 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
         issuer = newIssuer;
     }
 
-    /// @notice Update the score weights. They MUST sum to 10_000 bps.
     function setWeights(uint16 _aiWeightBps, uint16 _bureauWeightBps) external onlyOwner {
         if (uint256(_aiWeightBps) + uint256(_bureauWeightBps) != CreditTypes.BPS_DENOMINATOR) {
             revert InvalidWeights();
@@ -278,6 +333,21 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
         minEligibleScore = newMin;
     }
 
+    function setEnsRegistry(address ensRegistry) external onlyOwner {
+        ens = IENSRegistry(ensRegistry);
+        emit EnsRegistryUpdated(ensRegistry);
+    }
+
+    function setEnsGateEnabled(bool enabled) external onlyOwner {
+        ensGateEnabled = enabled;
+        emit EnsGateUpdated(enabled, requireAttestationRecord);
+    }
+
+    function setRequireAttestationRecord(bool required) external onlyOwner {
+        requireAttestationRecord = required;
+        emit EnsGateUpdated(ensGateEnabled, required);
+    }
+
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         emit OwnershipTransferred(owner, newOwner);
@@ -285,7 +355,7 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
     }
 
     // ---------------------------------------------------------------------
-    // Internal
+    // Internal — scoring
     // ---------------------------------------------------------------------
 
     function _validate(address borrower, CreditTypes.ScoreInputs calldata inputs) private view {
@@ -301,5 +371,55 @@ contract CreditCertificateRegistry is ICreditCertificateRegistry {
         return CreditTypes.combineScore(
             inputs.confidentialAiScore, inputs.bureauScore, aiWeightBps, bureauWeightBps
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Internal — ENS resolution (the gate)
+    // ---------------------------------------------------------------------
+
+    /// @dev Resolves the certificate's ENS name onchain and checks it points to the
+    ///      borrower. If `ens` is not configured, ENS verification is treated as a pass
+    ///      (so the gate can be flipped on only once a registry is wired). External calls
+    ///      are wrapped in try/catch so a missing/incompatible resolver fails closed.
+    function _ensOk(address borrower) private view returns (bool) {
+        if (address(ens) == address(0)) return true;
+
+        CreditTypes.CreditCertificate storage cert = _certificates[borrower];
+        bytes32 node = cert.ensNode;
+        if (node == bytes32(0)) return false;
+
+        address resolverAddr = ens.resolver(node);
+        if (resolverAddr == address(0)) return false;
+
+        try IAddrResolver(resolverAddr).addr(node) returns (address payable resolved) {
+            if (resolved != borrower) return false;
+        } catch {
+            return false;
+        }
+
+        if (requireAttestationRecord) {
+            try ITextResolver(resolverAddr).text(node, ATTESTATION_KEY) returns (string memory rec) {
+                if (keccak256(bytes(rec)) != keccak256(bytes(_toHexString(cert.attestationHash)))) {
+                    return false;
+                }
+            } catch {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// @dev bytes32 -> "0x"-prefixed lowercase hex string (66 chars).
+    function _toHexString(bytes32 value) private pure returns (string memory) {
+        bytes16 hexDigits = "0123456789abcdef";
+        bytes memory str = new bytes(66);
+        str[0] = "0";
+        str[1] = "x";
+        for (uint256 i = 0; i < 32; i++) {
+            str[2 + i * 2] = hexDigits[uint8(value[i] >> 4)];
+            str[3 + i * 2] = hexDigits[uint8(value[i] & 0x0f)];
+        }
+        return string(str);
     }
 }

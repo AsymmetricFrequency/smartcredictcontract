@@ -83,6 +83,9 @@ library CreditTypes {
         bytes32 attestationHash;
         bytes32 bureauReportHash;
         bytes32 evidenceDigest;
+        // --- ENS identity link (the lending gate) ---
+        string ensName; // e.g. "acme-business.eth"
+        bytes32 ensNode; // namehash of ensName (precomputed offchain)
         // --- lifecycle ---
         Status status;
         uint256 issuedAt;
