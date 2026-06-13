@@ -102,6 +102,50 @@ default the reserve refills `liquidity` so LPs are made whole up to the availabl
 The vault has no ENS logic of its own — the credit + ENS gate is enforced entirely by
 `registry.isEligible`, re-checked at payout time.
 
+## End-to-end sequence
+
+```mermaid
+sequenceDiagram
+  actor Biz as Business (wallet)
+  participant BE as LendSignal Backend / CRE
+  participant AI as Chainlink Confidential AI
+  participant CRS as CRS Bureau (offchain)
+  participant Reg as CreditCertificateRegistry
+  participant ENS as ENS Registry + Resolver
+  participant Vault as LendingVault
+
+  Note over Biz,CRS: 1. Absorb + process info (OFF-CHAIN)
+  Biz->>BE: business profile + documents + KYC/KYB
+  BE->>AI: confidential inference (evidence)
+  AI-->>BE: confidentialAiScore + attestationHash
+  BE->>CRS: business credit query
+  CRS-->>BE: bureauScore + bureauReportHash
+
+  Note over BE,Reg: 2. Issue certificate (ON-CHAIN)
+  BE->>Reg: issueCertificate(wallet, ScoreInputs)
+  Reg->>Reg: combinedScore = AI*70% + bureau*30%; derive RiskTier
+  Reg-->>Biz: CertificateIssued (score, tier, hashes)
+  BE->>Reg: linkEns(wallet, "acme.eth", namehash)
+
+  Note over Biz,ENS: 3. ENS identity (the gate)
+  Biz->>ENS: addr(node)=wallet + text lendsignal.attestation
+
+  Note over Biz,Vault: 4. Borrow
+  Biz->>Vault: requestLoan(amount, days, ens)
+  Vault->>Reg: isEligible(wallet)
+  Reg->>ENS: resolver(node).addr(node) == wallet ?
+  ENS-->>Reg: yes
+  Reg-->>Vault: true (active + score + tier + ENS)
+  Vault->>Reg: isEligible(wallet)  (re-check at payout)
+  Vault-->>Biz: loan paid out (principal)
+  Biz->>Vault: repay(principal + fee)   (fee -> protection reserve)
+```
+
+Two relationships make the design click:
+
+- **wallet → certificate** — resolved by the registry (the wallet is the index/key).
+- **ENS name → wallet → certificate** — resolved by ENS (human-readable identity + gate).
+
 ## Access control
 
 - `owner` — admin; rotates the issuer, tunes weights, the eligibility floor and the ENS gate.
