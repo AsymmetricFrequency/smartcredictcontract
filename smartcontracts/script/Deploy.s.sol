@@ -2,6 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {CreditCertificateRegistry} from "../src/CreditCertificateRegistry.sol";
+import {LendingVault} from "../src/LendingVault.sol";
+import {IERC20} from "../src/interfaces/IERC20.sol";
+import {MockERC20} from "../src/mocks/MockERC20.sol";
 
 /// @dev Minimal cheatcode surface (vendored so the project needs no forge-std submodule).
 interface Vm {
@@ -12,22 +15,34 @@ interface Vm {
     function stopBroadcast() external;
 }
 
-/// @notice Deploys CreditCertificateRegistry (contract #1).
+/// @notice Deploys both LendSignal contracts.
 /// @dev Usage:
-///        forge script script/Deploy.s.sol:Deploy \
-///          --rpc-url $RPC_URL --broadcast
+///        forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
 ///      Env:
-///        PRIVATE_KEY  (required) deployer key
-///        ISSUER       (optional) issuer address; defaults to the deployer
+///        PRIVATE_KEY (required) deployer key
+///        ISSUER      (optional) certificate issuer; defaults to the deployer
+///        ASSET       (optional) ERC20 loan asset; if unset, a MockERC20 is deployed
 contract Deploy {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    function run() external returns (CreditCertificateRegistry registry) {
+    function run()
+        external
+        returns (CreditCertificateRegistry registry, LendingVault vault, address asset)
+    {
         uint256 deployerPk = vm.envUint("PRIVATE_KEY");
         address issuer = vm.envOr("ISSUER", vm.addr(deployerPk));
+        asset = vm.envOr("ASSET", address(0));
 
         vm.startBroadcast(deployerPk);
+
         registry = new CreditCertificateRegistry(issuer);
+
+        if (asset == address(0)) {
+            asset = address(new MockERC20("Mock USD Coin", "mUSDC", 6));
+        }
+
+        vault = new LendingVault(IERC20(asset), registry);
+
         vm.stopBroadcast();
     }
 }
