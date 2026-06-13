@@ -1,0 +1,20 @@
+# OS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# Foundry build output (also ignored inside smartcontracts/)
+smartcontracts/cache/
+smartcontracts/out/
+smartcontracts/broadcast/
+smartcontracts/lib/
