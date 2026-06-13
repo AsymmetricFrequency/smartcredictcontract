@@ -1,6 +1,9 @@
 # OS
 .DS_Store
 
+# Separate embedded project (its own repo: Ekinoxis-evm/thelender)
+thelender/
+
 # Env / secrets
 .env
 .env.*
