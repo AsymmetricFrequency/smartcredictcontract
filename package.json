@@ -1,0 +1,21 @@
+{
+  "name": "hackathon-credsignal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root task runner — delegates to the thelender Scaffold-ETH 2 monorepo (yarn 4). Not a workspace; just lets you drive the app from the repo root.",
+  "scripts": {
+    "setup": "cd thelender && yarn install",
+    "chain": "cd thelender && yarn chain",
+    "deploy": "cd thelender && yarn deploy",
+    "start": "cd thelender && yarn start",
+    "dev": "cd thelender && yarn start",
+    "test": "cd thelender && yarn test",
+    "compile": "cd thelender && yarn compile",
+    "account": "cd thelender && yarn account",
+    "account:generate": "cd thelender && yarn account:generate",
+    "lint": "cd thelender && yarn lint",
+    "format": "cd thelender && yarn format",
+    "next:build": "cd thelender && yarn next:build",
+    "vercel:yolo": "cd thelender && yarn vercel:yolo"
+  }
+}

@@ -76,9 +76,12 @@ The demo flow shows:
 hackathon-credsignal/
 ├── artifacts/
 │   ├── LendSignal_Credit_Certificate_Brief.docx
-│   └── LendSignal_Credit_Certificate_Brief.pdf
+│   ├── LendSignal_Credit_Certificate_Brief.pdf
+│   ├── LendSignal_User_Data_Flow.docx
+│   └── LendSignal_User_Data_Flow.pdf
 ├── scripts/
-│   └── build_concept_brief.py
+│   ├── build_concept_brief.py
+│   └── build_user_data_flow_pdf.py
 ├── README.md
 └── docs/
     ├── ARCHITECTURE.md
@@ -93,5 +96,6 @@ hackathon-credsignal/
     ├── HACKATHON_48H_SCOPE.md
     ├── MVP_SPEC.md
     ├── SMART_CONTRACT_ARCHITECTURE.md
+    ├── USER_DATA_FLOW.md
     └── WIREFRAMES.md
 ```
